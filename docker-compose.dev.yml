@@ -47,6 +47,48 @@ services:
       timeout: 3s
       retries: 5
 
+  # MinIO — S3-совместимое локальное хранилище для разработки. В проде
+  # используется Selectel Cloud Storage (S3-совместимый API).
+  # UI:  http://localhost:9001 (admin/admin12345)
+  # API: http://localhost:9000
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: khubiy-workshop-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_admin12345
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Создаёт бакеты при первом старте. После успешного выполнения контейнер
+  # завершается; повторный запуск идемпотентен.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 minio_admin minio_admin12345 &&
+        mc mb --ignore-existing local/khubiy-files &&
+        mc mb --ignore-existing local/khubiy-public &&
+        mc mb --ignore-existing local/khubiy-temp &&
+        mc anonymous set download local/khubiy-public &&
+        mc ilm rule add local/khubiy-temp --expire-days 1 || true &&
+        echo 'MinIO buckets ready'
+      "
+    restart: "no"
+
   # Mailpit — локальный SMTP-улавливатель для разработки. Заменяет реальный
   # email-провайдер (Unisender/SendPulse/Mailgun) — будет использован в проде.
   # UI:  http://localhost:8025
@@ -78,3 +120,5 @@ volumes:
     name: khubiy-workshop-redis-data
   mailpit-data:
     name: khubiy-workshop-mailpit-data
+  minio-data:
+    name: khubiy-workshop-minio-data
