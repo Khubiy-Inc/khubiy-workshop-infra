@@ -1,0 +1,31 @@
+# Env files (содержат секреты)
+.env
+.env.*
+!.env.example
+
+# Ansible
+*.retry
+ansible/inventory/hosts.yml
+ansible/group_vars/all/vault.yml
+
+# Local dumps / backups
+*.dump
+*.sql
+backups/
+local/
+tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# SSH keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Logs
+*.log
