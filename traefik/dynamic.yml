@@ -1,0 +1,56 @@
+# Динамическая конфигурация Traefik — security middlewares.
+# Подключается через `--providers.file.directory=/etc/traefik/dynamic`.
+#
+# Используется в `docker-compose.prod.yml`. Применяется к роутерам через
+# label `traefik.http.routers.<name>.middlewares=security-headers@file,...`.
+
+http:
+  middlewares:
+    security-headers:
+      headers:
+        # TLS / HSTS — 2 года с preload (после успешной проверки https://hstspreload.org)
+        stsSeconds: 63072000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+
+        # Защита от MIME-sniffing
+        contentTypeNosniff: true
+
+        # Только same-origin iframe; защита от clickjacking
+        frameDeny: true
+
+        # Referrer не утекает на сторонние ресурсы
+        referrerPolicy: strict-origin-when-cross-origin
+
+        # Permissions-Policy: запрещаем то, чем мы не пользуемся
+        permissionsPolicy: "geolocation=(), microphone=(), camera=(), payment=()"
+
+        # CSP базовый — расширяется в Phase 1 после готовности фронта
+        contentSecurityPolicy: >-
+          default-src 'self';
+          script-src 'self';
+          style-src 'self' 'unsafe-inline';
+          img-src 'self' data: https:;
+          connect-src 'self' https://app.khubiyinc.ru;
+          frame-ancestors 'none';
+          base-uri 'self';
+          form-action 'self'
+
+        # Современные браузеры уже игнорируют, но не мешает
+        browserXssFilter: true
+        customResponseHeaders:
+          # Убираем серверное имя
+          Server: ""
+          X-Powered-By: ""
+
+    rate-limit-auth:
+      # IP-based лимит на auth endpoints. Дополняет per-account lockout в Redis.
+      # 10 запросов/мин с одного IP на /api/v1/platform/auth/*.
+      rateLimit:
+        average: 10
+        period: 1m
+        burst: 5
+        sourceCriterion:
+          ipStrategy:
+            depth: 1  # за Traefik одна прокси-цепочка → берём ClientIP из X-Forwarded-For
