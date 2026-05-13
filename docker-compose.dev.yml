@@ -1,0 +1,54 @@
+# Локальное окружение для разработки KhubiyInc Workshop.
+# Запуск:  docker compose -f docker-compose.dev.yml up -d
+# Остановка с сохранением данных:  docker compose -f docker-compose.dev.yml down
+# Сброс с удалением данных:  docker compose -f docker-compose.dev.yml down -v
+#
+# Production compose (Traefik, PgBouncer, FastAPI ×2, arq) — в docker-compose.prod.yml
+# (будет добавлен в Phase 0.7).
+
+name: khubiy-workshop-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: khubiy-workshop-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: khubiy_workshop_dev
+      # Локаль для unaccent / pg_trgm
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d khubiy_workshop_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: khubiy-workshop-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+    name: khubiy-workshop-postgres-data
+  redis-data:
+    name: khubiy-workshop-redis-data
