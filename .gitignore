@@ -10,10 +10,10 @@ ansible/group_vars/all/vault.yml
 
 # Local dumps / backups
 *.dump
-*.sql
 backups/
 local/
 tmp/
+# *.sql коммитим (init-скрипты, миграции в инфре, runbook-команды)
 
 # IDE
 .idea/
