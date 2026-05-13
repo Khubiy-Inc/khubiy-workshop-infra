@@ -47,8 +47,34 @@ services:
       timeout: 3s
       retries: 5
 
+  # Mailpit — локальный SMTP-улавливатель для разработки. Заменяет реальный
+  # email-провайдер (Unisender/SendPulse/Mailgun) — будет использован в проде.
+  # UI:  http://localhost:8025
+  # SMTP: localhost:1025 (без auth)
+  # HTTP API: http://localhost:8025/api/v1/messages — используется в тестах.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    container_name: khubiy-workshop-mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"   # SMTP
+      - "127.0.0.1:8025:8025"   # Web UI + HTTP API
+    environment:
+      MP_MAX_MESSAGES: "5000"
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    volumes:
+      - mailpit-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8025/livez || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   postgres-data:
     name: khubiy-workshop-postgres-data
   redis-data:
     name: khubiy-workshop-redis-data
+  mailpit-data:
+    name: khubiy-workshop-mailpit-data
