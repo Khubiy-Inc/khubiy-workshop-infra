@@ -1,0 +1,48 @@
+name: Lint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  yaml-and-shell:
+    name: YAML + shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: .
+          config_data: |
+            extends: default
+            rules:
+              line-length: { max: 120, level: warning }
+              comments: { min-spaces-from-content: 1 }
+              braces: { max-spaces-inside: 1 }
+              truthy: { check-keys: false }
+
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          severity: warning
+          ignore_paths: ansible
+
+  docker-compose-config:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate dev compose
+        run: docker compose -f docker-compose.dev.yml config -q
