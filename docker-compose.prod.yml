@@ -1,0 +1,159 @@
+# Production compose для KhubiyInc Workshop.
+#
+# Минимально жизнеспособная конфигурация для Phase 0.7:
+#   Traefik 3 (TLS, reverse proxy) → FastAPI ×2 → Postgres + Redis.
+#
+# Добавится позже:
+#   - PgBouncer (Phase 0.7+)
+#   - arq workers (Phase 0.7+)
+#   - blue-green через Traefik weighted services (Phase 0.11 deploy)
+#
+# Запуск:  docker compose -f docker-compose.prod.yml up -d
+# Образ api тянется из ghcr.io/khubiy-inc/khubiy-workshop-api:<tag>
+# (build workflow в khubiy-workshop-api публикует на каждый тег).
+
+name: khubiy-workshop-prod
+
+x-api-env: &api-env
+  KW_ENVIRONMENT: production
+  KW_LOG_FORMAT: json
+  KW_LOG_LEVEL: INFO
+  KW_DATABASE_URL: postgresql+asyncpg://khubiy_app:${KW_DB_APP_PASSWORD}@postgres:5432/khubiy_workshop
+  KW_DATABASE_URL_ADMIN: postgresql+asyncpg://khubiy_admin:${KW_DB_ADMIN_PASSWORD}@postgres:5432/khubiy_workshop
+  KW_REDIS_URL: redis://redis:6379/0
+  KW_JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
+  KW_JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
+  KW_SENTRY_DSN: ${KW_SENTRY_DSN}
+  KW_SENTRY_TRACES_SAMPLE_RATE: 0.05
+  KW_CORS_ORIGINS: '["https://app.khubiyinc.ru"]'
+
+services:
+  traefik:
+    image: traefik:v3.5
+    restart: unless-stopped
+    command:
+      - --api.dashboard=true
+      - --api.insecure=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${TRAEFIK_ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.dnschallenge=true
+      - --certificatesresolvers.le.acme.dnschallenge.provider=${TRAEFIK_DNS_PROVIDER}
+      - --log.level=INFO
+      - --accesslog=true
+      - --metrics.prometheus=true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+      - ./traefik:/etc/traefik/dynamic:ro
+    environment:
+      # DNS-провайдер пробрасывает свои env-переменные (TRAEFIK_DNS_PROVIDER=cloudflare → CF_API_EMAIL/CF_DNS_API_TOKEN).
+      CF_API_EMAIL: ${CF_API_EMAIL:-}
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+    networks:
+      - public
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=Host(`traefik.khubiyinc.ru`)
+      - traefik.http.routers.dashboard.entrypoints=websecure
+      - traefik.http.routers.dashboard.tls.certresolver=le
+      - traefik.http.routers.dashboard.service=api@internal
+      - traefik.http.routers.dashboard.middlewares=auth-basic
+      - traefik.http.middlewares.auth-basic.basicauth.usersfile=/etc/traefik/dynamic/users
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${KW_DB_SUPER_PASSWORD}
+      POSTGRES_DB: khubiy_workshop
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d khubiy_workshop"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+
+  api:
+    image: ghcr.io/khubiy-inc/khubiy-workshop-api:${API_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment: *api-env
+    secrets:
+      - jwt_private.pem
+      - jwt_public.pem
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 2
+    networks:
+      - internal
+      - public
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=khubiy-workshop-prod_public
+      - traefik.http.routers.api.rule=Host(`app.khubiyinc.ru`) && PathPrefix(`/api`)
+      - traefik.http.routers.api.entrypoints=websecure
+      - traefik.http.routers.api.tls.certresolver=le
+      - traefik.http.services.api.loadbalancer.server.port=8000
+      - traefik.http.services.api.loadbalancer.healthcheck.path=/health
+      - traefik.http.services.api.loadbalancer.healthcheck.interval=15s
+
+volumes:
+  postgres-data:
+    name: khubiy-workshop-postgres-data
+  redis-data:
+    name: khubiy-workshop-redis-data
+  traefik-letsencrypt:
+    name: khubiy-workshop-traefik-le
+
+networks:
+  public:
+    name: khubiy-workshop-prod_public
+  internal:
+    name: khubiy-workshop-prod_internal
+    internal: false  # api нужен исходящий доступ для writebooks/email/Sentry
+
+secrets:
+  jwt_private.pem:
+    file: ./secrets/jwt_private.pem
+  jwt_public.pem:
+    file: ./secrets/jwt_public.pem
