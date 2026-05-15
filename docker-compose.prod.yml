@@ -90,6 +90,9 @@ services:
     environment:
       # Selectel DNS API (если переключитесь на DNS-01 challenge для wildcard)
       SELECTEL_API_TOKEN: ${SELECTEL_API_TOKEN:-}
+      # Docker SDK по умолчанию пытается API 1.24, но Docker 29+ требует >=1.40.
+      # Явно указываем чтобы Traefik читал labels.
+      DOCKER_API_VERSION: "1.45"
     networks:
       - public
     labels:
