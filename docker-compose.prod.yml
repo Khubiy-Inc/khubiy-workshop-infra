@@ -111,6 +111,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${KW_DB_SUPER_PASSWORD}
       POSTGRES_DB: khubiy_workshop
+      # Прокидываем пароли technical users в init-скрипт (init.sh их читает)
+      KW_DB_ADMIN_PASSWORD: ${KW_DB_ADMIN_PASSWORD}
+      KW_DB_APP_PASSWORD: ${KW_DB_APP_PASSWORD}
+      KW_DB_READONLY_PASSWORD: ${KW_DB_READONLY_PASSWORD:-khubiy_readonly_dev_password}
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
     volumes:
