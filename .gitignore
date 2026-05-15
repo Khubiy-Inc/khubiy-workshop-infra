@@ -2,6 +2,11 @@
 .env
 .env.*
 !.env.example
+!.env.prod.example
+
+# Production secrets и traefik basic-auth
+secrets/
+traefik/users
 
 # Ansible
 *.retry

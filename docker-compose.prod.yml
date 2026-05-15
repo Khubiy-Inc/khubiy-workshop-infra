@@ -1,16 +1,20 @@
 # Production compose для KhubiyInc Workshop.
 #
-# Минимально жизнеспособная конфигурация для Phase 0.7:
-#   Traefik 3 (TLS, reverse proxy) → FastAPI ×2 → Postgres + Redis.
+# Стек:
+#   Traefik 3 (TLS, reverse proxy) → web (nginx SPA) + api (FastAPI) →
+#   Postgres + Redis + MinIO.
 #
-# Добавится позже:
-#   - PgBouncer (Phase 0.7+)
-#   - arq workers (Phase 0.7+)
-#   - blue-green через Traefik weighted services (Phase 0.11 deploy)
+# Запуск:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
 #
-# Запуск:  docker compose -f docker-compose.prod.yml up -d
-# Образ api тянется из ghcr.io/khubiy-inc/khubiy-workshop-api:<tag>
-# (build workflow в khubiy-workshop-api публикует на каждый тег).
+# Образы тянутся из ghcr.io/khubiy-inc/khubiy-workshop-{api,web}:<tag>.
+# Build workflow'ы в репо `khubiy-workshop-api` и `khubiy-workshop-web`
+# публикуют на каждый push в main.
+#
+# TLS: HTTP-01 challenge через Let's Encrypt (без DNS API token).
+# Для wildcard-сертификата (single cert на *.khubiyinc.ru) — раскомментить
+# selectel DNS challenge ниже и заполнить SELECTEL_API_TOKEN в .env.
 
 name: khubiy-workshop-prod
 
@@ -23,11 +27,35 @@ x-api-env: &api-env
   KW_REDIS_URL: redis://redis:6379/0
   KW_JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
   KW_JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
-  KW_SENTRY_DSN: ${KW_SENTRY_DSN}
-  KW_SENTRY_TRACES_SAMPLE_RATE: 0.05
-  KW_CORS_ORIGINS: '["https://app.khubiyinc.ru"]'
+  KW_SENTRY_DSN: ${KW_SENTRY_DSN:-}
+  KW_SENTRY_TRACES_SAMPLE_RATE: ${KW_SENTRY_TRACES_SAMPLE_RATE:-0.05}
+  KW_CORS_ORIGINS: '["https://app.${KW_PRIMARY_DOMAIN}"]'
+  # WebPush VAPID — генерируется один раз через `npx web-push generate-vapid-keys`
+  KW_WEBPUSH_VAPID_PUBLIC_KEY: ${KW_WEBPUSH_VAPID_PUBLIC_KEY}
+  KW_WEBPUSH_VAPID_PRIVATE_KEY: ${KW_WEBPUSH_VAPID_PRIVATE_KEY}
+  KW_WEBPUSH_VAPID_EMAIL: mailto:${KW_WEBPUSH_VAPID_EMAIL}
+  # WebAuthn — для kiosk passkey'ев
+  KW_WEBAUTHN_RP_ID: app.${KW_PRIMARY_DOMAIN}
+  KW_WEBAUTHN_RP_NAME: KhubiyInc Workshop
+  KW_WEBAUTHN_RP_ORIGIN: https://app.${KW_PRIMARY_DOMAIN}
+  # MinIO / S3
+  KW_S3_ENDPOINT_URL: http://minio:9000
+  KW_S3_REGION: ${KW_S3_REGION:-ru-1}
+  KW_S3_BUCKET: ${KW_S3_BUCKET:-khubiy-workshop}
+  KW_S3_ACCESS_KEY: ${KW_S3_ACCESS_KEY}
+  KW_S3_SECRET_KEY: ${KW_S3_SECRET_KEY}
+  KW_S3_USE_PATH_STYLE: 'true'
+  # Email — SMTP (через Mailpit на dev, через Unisender Go/SendPulse на prod)
+  KW_SMTP_HOST: ${KW_SMTP_HOST:-mailpit}
+  KW_SMTP_PORT: ${KW_SMTP_PORT:-1025}
+  KW_SMTP_USER: ${KW_SMTP_USER:-}
+  KW_SMTP_PASSWORD: ${KW_SMTP_PASSWORD:-}
+  KW_SMTP_FROM: ${KW_SMTP_FROM:-noreply@${KW_PRIMARY_DOMAIN}}
 
 services:
+  # --------------------------------------------------------------------------
+  # Reverse proxy + TLS
+  # --------------------------------------------------------------------------
   traefik:
     image: traefik:v3.5
     restart: unless-stopped
@@ -43,8 +71,12 @@ services:
       - --entrypoints.websecure.address=:443
       - --certificatesresolvers.le.acme.email=${TRAEFIK_ACME_EMAIL}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-      - --certificatesresolvers.le.acme.dnschallenge=true
-      - --certificatesresolvers.le.acme.dnschallenge.provider=${TRAEFIK_DNS_PROVIDER}
+      # HTTP-01 challenge — работает с любым registrar (DNS не трогаем).
+      # Для wildcard cert закомментить httpchallenge и раскомментить dnschallenge.
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      # - --certificatesresolvers.le.acme.dnschallenge=true
+      # - --certificatesresolvers.le.acme.dnschallenge.provider=selectel
       - --log.level=INFO
       - --accesslog=true
       - --metrics.prometheus=true
@@ -56,20 +88,22 @@ services:
       - traefik-letsencrypt:/letsencrypt
       - ./traefik:/etc/traefik/dynamic:ro
     environment:
-      # DNS-провайдер пробрасывает свои env-переменные (TRAEFIK_DNS_PROVIDER=cloudflare → CF_API_EMAIL/CF_DNS_API_TOKEN).
-      CF_API_EMAIL: ${CF_API_EMAIL:-}
-      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+      # Selectel DNS API (если переключитесь на DNS-01 challenge для wildcard)
+      SELECTEL_API_TOKEN: ${SELECTEL_API_TOKEN:-}
     networks:
       - public
     labels:
       - traefik.enable=true
-      - traefik.http.routers.dashboard.rule=Host(`traefik.khubiyinc.ru`)
+      - traefik.http.routers.dashboard.rule=Host(`traefik.${KW_PRIMARY_DOMAIN}`)
       - traefik.http.routers.dashboard.entrypoints=websecure
       - traefik.http.routers.dashboard.tls.certresolver=le
       - traefik.http.routers.dashboard.service=api@internal
       - traefik.http.routers.dashboard.middlewares=auth-basic
       - traefik.http.middlewares.auth-basic.basicauth.usersfile=/etc/traefik/dynamic/users
 
+  # --------------------------------------------------------------------------
+  # Database
+  # --------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -90,6 +124,9 @@ services:
     networks:
       - internal
 
+  # --------------------------------------------------------------------------
+  # Cache / lockouts / outbox JTI store
+  # --------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -104,6 +141,61 @@ services:
     networks:
       - internal
 
+  # --------------------------------------------------------------------------
+  # S3-compatible object storage (file uploads: product covers, employee photos)
+  # --------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${KW_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${KW_S3_SECRET_KEY}
+      # Если хотите выставить MinIO console наружу — добавьте labels для traefik
+      MINIO_BROWSER_REDIRECT_URL: https://minio.${KW_PRIMARY_DOMAIN}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - internal
+      - public
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=khubiy-workshop-prod_public
+      # MinIO console — admin UI на minio.{domain}
+      - traefik.http.routers.minio-console.rule=Host(`minio.${KW_PRIMARY_DOMAIN}`)
+      - traefik.http.routers.minio-console.entrypoints=websecure
+      - traefik.http.routers.minio-console.tls.certresolver=le
+      - traefik.http.routers.minio-console.service=minio-console
+      - traefik.http.services.minio-console.loadbalancer.server.port=9001
+      # MinIO API — пока не выставляем публично; api ходит к нему по internal сети.
+
+  # --------------------------------------------------------------------------
+  # Bucket auto-create (one-shot)
+  # --------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${KW_S3_ACCESS_KEY} ${KW_S3_SECRET_KEY} &&
+      mc mb --ignore-existing local/${KW_S3_BUCKET:-khubiy-workshop} &&
+      mc anonymous set download local/${KW_S3_BUCKET:-khubiy-workshop} || true
+      "
+    restart: "no"
+    networks:
+      - internal
+
+  # --------------------------------------------------------------------------
+  # Backend API (FastAPI)
+  # --------------------------------------------------------------------------
   api:
     image: ghcr.io/khubiy-inc/khubiy-workshop-api:${API_IMAGE_TAG:-latest}
     restart: unless-stopped
@@ -116,21 +208,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else sys.exit(1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
-    deploy:
-      replicas: 2
     networks:
       - internal
       - public
     labels:
       - traefik.enable=true
       - traefik.docker.network=khubiy-workshop-prod_public
-      - traefik.http.routers.api.rule=Host(`app.khubiyinc.ru`) && PathPrefix(`/api`)
+      - traefik.http.routers.api.rule=Host(`app.${KW_PRIMARY_DOMAIN}`) && PathPrefix(`/api`)
       - traefik.http.routers.api.entrypoints=websecure
       - traefik.http.routers.api.tls.certresolver=le
       - traefik.http.routers.api.middlewares=security-headers@file
@@ -138,18 +230,62 @@ services:
       - traefik.http.services.api.loadbalancer.healthcheck.path=/health
       - traefik.http.services.api.loadbalancer.healthcheck.interval=15s
       # Отдельный (более строгий) роутер для auth-endpoints — rate-limit
-      - traefik.http.routers.api-auth.rule=Host(`app.khubiyinc.ru`) && PathPrefix(`/api/v1/platform/auth`)
+      - traefik.http.routers.api-auth.rule=Host(`app.${KW_PRIMARY_DOMAIN}`) && PathPrefix(`/api/v1/platform/auth`)
       - traefik.http.routers.api-auth.entrypoints=websecure
       - traefik.http.routers.api-auth.tls.certresolver=le
       - traefik.http.routers.api-auth.priority=100
       - traefik.http.routers.api-auth.middlewares=security-headers@file,rate-limit-auth@file
       - traefik.http.routers.api-auth.service=api
 
+  # --------------------------------------------------------------------------
+  # API one-shot migration job (запускается при каждом deploy)
+  # --------------------------------------------------------------------------
+  api-migrate:
+    image: ghcr.io/khubiy-inc/khubiy-workshop-api:${API_IMAGE_TAG:-latest}
+    restart: "no"
+    environment: *api-env
+    secrets:
+      - jwt_private.pem
+      - jwt_public.pem
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    networks:
+      - internal
+
+  # --------------------------------------------------------------------------
+  # Web SPA (nginx + Vite bundle)
+  # --------------------------------------------------------------------------
+  web:
+    image: ghcr.io/khubiy-inc/khubiy-workshop-web:${WEB_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - public
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=khubiy-workshop-prod_public
+      # Web на корне app.{domain} — но НЕ перехватывает /api (выше priority у api router'а)
+      - traefik.http.routers.web.rule=Host(`app.${KW_PRIMARY_DOMAIN}`)
+      - traefik.http.routers.web.priority=1
+      - traefik.http.routers.web.entrypoints=websecure
+      - traefik.http.routers.web.tls.certresolver=le
+      - traefik.http.routers.web.middlewares=security-headers@file
+      - traefik.http.services.web.loadbalancer.server.port=80
+
 volumes:
   postgres-data:
     name: khubiy-workshop-postgres-data
   redis-data:
     name: khubiy-workshop-redis-data
+  minio-data:
+    name: khubiy-workshop-minio-data
   traefik-letsencrypt:
     name: khubiy-workshop-traefik-le
 
@@ -158,7 +294,7 @@ networks:
     name: khubiy-workshop-prod_public
   internal:
     name: khubiy-workshop-prod_internal
-    internal: false  # api нужен исходящий доступ для writebooks/email/Sentry
+    internal: false  # api нужен исходящий доступ для webhooks/email/Sentry/Expo Push
 
 secrets:
   jwt_private.pem:
