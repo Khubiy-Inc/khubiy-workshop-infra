@@ -54,15 +54,43 @@ x-api-env: &api-env
 
 services:
   # --------------------------------------------------------------------------
+  # Docker socket proxy — изолирует Traefik от Docker socket, заодно
+  # решает проблему Docker 29+ который не пускает старые API-клиенты (Traefik 3.5
+  # Go SDK по умолчанию пытается API 1.24, а Docker engine требует >=1.40).
+  # --------------------------------------------------------------------------
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3
+    restart: unless-stopped
+    environment:
+      # Только read-only доступ к containers/services/networks
+      CONTAINERS: 1
+      SERVICES: 1
+      NETWORKS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:2375/version | grep -q ApiVersion || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --------------------------------------------------------------------------
   # Reverse proxy + TLS
   # --------------------------------------------------------------------------
   traefik:
     image: traefik:v3.5
     restart: unless-stopped
+    depends_on:
+      docker-socket-proxy:
+        condition: service_healthy
     command:
       - --api.dashboard=true
       - --api.insecure=false
       - --providers.docker=true
+      - --providers.docker.endpoint=tcp://docker-socket-proxy:2375
       - --providers.docker.exposedbydefault=false
       - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.web.address=:80
@@ -84,17 +112,15 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Сокет напрямую больше не пробрасываем — через docker-socket-proxy.
       - traefik-letsencrypt:/letsencrypt
       - ./traefik:/etc/traefik/dynamic:ro
     environment:
       # Selectel DNS API (если переключитесь на DNS-01 challenge для wildcard)
       SELECTEL_API_TOKEN: ${SELECTEL_API_TOKEN:-}
-      # Docker SDK по умолчанию пытается API 1.24, но Docker 29+ требует >=1.40.
-      # Явно указываем чтобы Traefik читал labels.
-      DOCKER_API_VERSION: "1.45"
     networks:
       - public
+      - internal
     labels:
       - traefik.enable=true
       - traefik.http.routers.dashboard.rule=Host(`traefik.${KW_PRIMARY_DOMAIN}`)
