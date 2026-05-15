@@ -1,7 +1,7 @@
 # Production compose для KhubiyInc Workshop.
 #
 # Стек:
-#   Traefik 3 (TLS, reverse proxy) → web (nginx SPA) + api (FastAPI) →
+#   Caddy (TLS + reverse proxy) → web (nginx SPA) + api (FastAPI) →
 #   Postgres + Redis + MinIO.
 #
 # Запуск:
@@ -12,9 +12,8 @@
 # Build workflow'ы в репо `khubiy-workshop-api` и `khubiy-workshop-web`
 # публикуют на каждый push в main.
 #
-# TLS: HTTP-01 challenge через Let's Encrypt (без DNS API token).
-# Для wildcard-сертификата (single cert на *.khubiyinc.ru) — раскомментить
-# selectel DNS challenge ниже и заполнить SELECTEL_API_TOKEN в .env.
+# TLS: Caddy автоматически берёт Let's Encrypt cert'ы (HTTP-01 challenge).
+# Конфиг роутинга — Caddyfile (читается из тома).
 
 name: khubiy-workshop-prod
 
@@ -30,105 +29,49 @@ x-api-env: &api-env
   KW_SENTRY_DSN: ${KW_SENTRY_DSN:-}
   KW_SENTRY_TRACES_SAMPLE_RATE: ${KW_SENTRY_TRACES_SAMPLE_RATE:-0.05}
   KW_CORS_ORIGINS: '["https://app.${KW_PRIMARY_DOMAIN}"]'
-  # WebPush VAPID — генерируется один раз через `npx web-push generate-vapid-keys`
   KW_WEBPUSH_VAPID_PUBLIC_KEY: ${KW_WEBPUSH_VAPID_PUBLIC_KEY}
   KW_WEBPUSH_VAPID_PRIVATE_KEY: ${KW_WEBPUSH_VAPID_PRIVATE_KEY}
   KW_WEBPUSH_VAPID_EMAIL: mailto:${KW_WEBPUSH_VAPID_EMAIL}
-  # WebAuthn — для kiosk passkey'ев
   KW_WEBAUTHN_RP_ID: app.${KW_PRIMARY_DOMAIN}
   KW_WEBAUTHN_RP_NAME: KhubiyInc Workshop
   KW_WEBAUTHN_RP_ORIGIN: https://app.${KW_PRIMARY_DOMAIN}
-  # MinIO / S3
   KW_S3_ENDPOINT_URL: http://minio:9000
   KW_S3_REGION: ${KW_S3_REGION:-ru-1}
   KW_S3_BUCKET: ${KW_S3_BUCKET:-khubiy-workshop}
   KW_S3_ACCESS_KEY: ${KW_S3_ACCESS_KEY}
   KW_S3_SECRET_KEY: ${KW_S3_SECRET_KEY}
   KW_S3_USE_PATH_STYLE: 'true'
-  # Email — SMTP (через Mailpit на dev, через Unisender Go/SendPulse на prod)
-  KW_SMTP_HOST: ${KW_SMTP_HOST:-mailpit}
-  KW_SMTP_PORT: ${KW_SMTP_PORT:-1025}
+  KW_SMTP_HOST: ${KW_SMTP_HOST:-}
+  KW_SMTP_PORT: ${KW_SMTP_PORT:-587}
   KW_SMTP_USER: ${KW_SMTP_USER:-}
   KW_SMTP_PASSWORD: ${KW_SMTP_PASSWORD:-}
   KW_SMTP_FROM: ${KW_SMTP_FROM:-noreply@${KW_PRIMARY_DOMAIN}}
 
 services:
   # --------------------------------------------------------------------------
-  # Docker socket proxy — изолирует Traefik от Docker socket, заодно
-  # решает проблему Docker 29+ который не пускает старые API-клиенты (Traefik 3.5
-  # Go SDK по умолчанию пытается API 1.24, а Docker engine требует >=1.40).
+  # Reverse proxy + automatic TLS (Caddy 2)
   # --------------------------------------------------------------------------
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3
+  caddy:
+    image: caddy:2-alpine
     restart: unless-stopped
-    environment:
-      # Только read-only доступ к containers/services/networks
-      CONTAINERS: 1
-      SERVICES: 1
-      NETWORKS: 1
-      POST: 0
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:2375/version | grep -q ApiVersion || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  # --------------------------------------------------------------------------
-  # Reverse proxy + TLS
-  # --------------------------------------------------------------------------
-  traefik:
-    image: traefik:v3.5
-    restart: unless-stopped
-    depends_on:
-      docker-socket-proxy:
-        condition: service_healthy
-    command:
-      - --api.dashboard=true
-      - --api.insecure=false
-      - --providers.docker=true
-      - --providers.docker.endpoint=tcp://docker-socket-proxy:2375
-      - --providers.docker.exposedbydefault=false
-      - --providers.file.directory=/etc/traefik/dynamic
-      - --entrypoints.web.address=:80
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.email=${TRAEFIK_ACME_EMAIL}
-      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
-      # HTTP-01 challenge — работает с любым registrar (DNS не трогаем).
-      # Для wildcard cert закомментить httpchallenge и раскомментить dnschallenge.
-      - --certificatesresolvers.le.acme.httpchallenge=true
-      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
-      # - --certificatesresolvers.le.acme.dnschallenge=true
-      # - --certificatesresolvers.le.acme.dnschallenge.provider=selectel
-      - --log.level=INFO
-      - --accesslog=true
-      - --metrics.prometheus=true
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      # Сокет напрямую больше не пробрасываем — через docker-socket-proxy.
-      - traefik-letsencrypt:/letsencrypt
-      - ./traefik:/etc/traefik/dynamic:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     environment:
-      # Selectel DNS API (если переключитесь на DNS-01 challenge для wildcard)
-      SELECTEL_API_TOKEN: ${SELECTEL_API_TOKEN:-}
+      PRIMARY_DOMAIN: ${KW_PRIMARY_DOMAIN}
+      ACME_EMAIL: ${TRAEFIK_ACME_EMAIL}
     networks:
       - public
       - internal
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.dashboard.rule=Host(`traefik.${KW_PRIMARY_DOMAIN}`)
-      - traefik.http.routers.dashboard.entrypoints=websecure
-      - traefik.http.routers.dashboard.tls.certresolver=le
-      - traefik.http.routers.dashboard.service=api@internal
-      - traefik.http.routers.dashboard.middlewares=auth-basic
-      - traefik.http.middlewares.auth-basic.basicauth.usersfile=/etc/traefik/dynamic/users
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # --------------------------------------------------------------------------
   # Database
@@ -140,7 +83,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${KW_DB_SUPER_PASSWORD}
       POSTGRES_DB: khubiy_workshop
-      # Прокидываем пароли technical users в init-скрипт (init.sh их читает)
       KW_DB_ADMIN_PASSWORD: ${KW_DB_ADMIN_PASSWORD}
       KW_DB_APP_PASSWORD: ${KW_DB_APP_PASSWORD}
       KW_DB_READONLY_PASSWORD: ${KW_DB_READONLY_PASSWORD:-khubiy_readonly_dev_password}
@@ -175,7 +117,7 @@ services:
       - internal
 
   # --------------------------------------------------------------------------
-  # S3-compatible object storage (file uploads: product covers, employee photos)
+  # S3-compatible object storage
   # --------------------------------------------------------------------------
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
@@ -184,7 +126,6 @@ services:
     environment:
       MINIO_ROOT_USER: ${KW_S3_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${KW_S3_SECRET_KEY}
-      # Если хотите выставить MinIO console наружу — добавьте labels для traefik
       MINIO_BROWSER_REDIRECT_URL: https://minio.${KW_PRIMARY_DOMAIN}
     volumes:
       - minio-data:/data
@@ -196,17 +137,6 @@ services:
       start_period: 20s
     networks:
       - internal
-      - public
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=khubiy-workshop-prod_public
-      # MinIO console — admin UI на minio.{domain}
-      - traefik.http.routers.minio-console.rule=Host(`minio.${KW_PRIMARY_DOMAIN}`)
-      - traefik.http.routers.minio-console.entrypoints=websecure
-      - traefik.http.routers.minio-console.tls.certresolver=le
-      - traefik.http.routers.minio-console.service=minio-console
-      - traefik.http.services.minio-console.loadbalancer.server.port=9001
-      # MinIO API — пока не выставляем публично; api ходит к нему по internal сети.
 
   # --------------------------------------------------------------------------
   # Bucket auto-create (one-shot)
@@ -251,24 +181,6 @@ services:
       start_period: 20s
     networks:
       - internal
-      - public
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=khubiy-workshop-prod_public
-      - traefik.http.routers.api.rule=Host(`app.${KW_PRIMARY_DOMAIN}`) && PathPrefix(`/api`)
-      - traefik.http.routers.api.entrypoints=websecure
-      - traefik.http.routers.api.tls.certresolver=le
-      - traefik.http.routers.api.middlewares=security-headers@file
-      - traefik.http.services.api.loadbalancer.server.port=8000
-      - traefik.http.services.api.loadbalancer.healthcheck.path=/health
-      - traefik.http.services.api.loadbalancer.healthcheck.interval=15s
-      # Отдельный (более строгий) роутер для auth-endpoints — rate-limit
-      - traefik.http.routers.api-auth.rule=Host(`app.${KW_PRIMARY_DOMAIN}`) && PathPrefix(`/api/v1/platform/auth`)
-      - traefik.http.routers.api-auth.entrypoints=websecure
-      - traefik.http.routers.api-auth.tls.certresolver=le
-      - traefik.http.routers.api-auth.priority=100
-      - traefik.http.routers.api-auth.middlewares=security-headers@file,rate-limit-auth@file
-      - traefik.http.routers.api-auth.service=api
 
   # --------------------------------------------------------------------------
   # API one-shot migration job (запускается при каждом deploy)
@@ -300,17 +212,7 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - public
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=khubiy-workshop-prod_public
-      # Web на корне app.{domain} — но НЕ перехватывает /api (выше priority у api router'а)
-      - traefik.http.routers.web.rule=Host(`app.${KW_PRIMARY_DOMAIN}`)
-      - traefik.http.routers.web.priority=1
-      - traefik.http.routers.web.entrypoints=websecure
-      - traefik.http.routers.web.tls.certresolver=le
-      - traefik.http.routers.web.middlewares=security-headers@file
-      - traefik.http.services.web.loadbalancer.server.port=80
+      - internal
 
 volumes:
   postgres-data:
@@ -319,8 +221,10 @@ volumes:
     name: khubiy-workshop-redis-data
   minio-data:
     name: khubiy-workshop-minio-data
-  traefik-letsencrypt:
-    name: khubiy-workshop-traefik-le
+  caddy-data:
+    name: khubiy-workshop-caddy-data
+  caddy-config:
+    name: khubiy-workshop-caddy-config
 
 networks:
   public:

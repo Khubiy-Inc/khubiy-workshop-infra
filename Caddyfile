@@ -1,0 +1,72 @@
+# Caddyfile для production KhubiyInc Workshop.
+#
+# Caddy автоматически:
+# - получает Let's Encrypt cert'ы (HTTP-01 challenge на :80)
+# - редиректит HTTP → HTTPS
+# - добавляет security headers
+#
+# Файл подключается через docker-compose volume. Изменения требуют
+# `docker compose restart caddy` (не reload — на горячую файл не
+# перечитывается без admin API).
+
+{
+    # Email для Let's Encrypt — подставляется через ENV ACME_EMAIL
+    email {$ACME_EMAIL}
+    # Метрики Prometheus (опц.)
+    servers {
+        metrics
+    }
+}
+
+# ============================================================================
+# Главный домен — Web SPA (frontend) + reverse-proxy /api/* в backend
+# ============================================================================
+
+app.{$PRIMARY_DOMAIN} {
+    # /api/* идёт в FastAPI; всё остальное — в nginx с SPA-бандлом
+    handle_path /api* {
+        # rewrite добавляет /api обратно (мы только path stripped через handle_path).
+        # Backend ожидает /api/v1/...
+        rewrite * /api{path}
+        reverse_proxy api:8000 {
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+        }
+    }
+
+    # Стандартные security headers
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+        -Server
+        -X-Powered-By
+    }
+
+    # Web SPA — nginx внутри web-контейнера на :80
+    reverse_proxy web:80
+}
+
+# ============================================================================
+# MinIO console (опц., только для админа)
+# ============================================================================
+
+minio.{$PRIMARY_DOMAIN} {
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+    reverse_proxy minio:9001
+}
+
+# ============================================================================
+# Apex redirect (khubiyinc.ru → app.khubiyinc.ru)
+# ============================================================================
+
+{$PRIMARY_DOMAIN}, www.{$PRIMARY_DOMAIN} {
+    redir https://app.{$PRIMARY_DOMAIN}{uri} permanent
+}
