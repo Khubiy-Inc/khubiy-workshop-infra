@@ -103,4 +103,22 @@ fi
 
 # Финальный статус — для health check / monitoring.
 echo "OK at $(date -u --iso-8601=seconds) size=${SIZE_MB}MB file=${DUMP_FILE}" > "$STATUS_FILE"
+
+# Heartbeat в БД — admin UI читает через GET /api/v1/internal/system-health,
+# показывает «Бэкап: 2 часа назад ✓» / WARN / DEAD. Если БД недоступна,
+# log + продолжаем (само-блокирующее поведение нежелательно для backup).
+log "Writing heartbeat to platform.system_heartbeats"
+HEARTBEAT_PAYLOAD=$(printf '{"size_mb":%s,"file":"%s"}' "$SIZE_MB" "$(basename "$DUMP_FILE")")
+if docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -d khubiy_workshop -v ON_ERROR_STOP=1 -q -c "
+        INSERT INTO platform.system_heartbeats (key, last_at, payload)
+        VALUES ('backup', NOW(), '${HEARTBEAT_PAYLOAD}'::jsonb)
+        ON CONFLICT (key) DO UPDATE
+        SET last_at = EXCLUDED.last_at, payload = EXCLUDED.payload;
+    " >/dev/null 2>&1; then
+    log "Heartbeat written"
+else
+    log "WARN: heartbeat write failed (БД недоступна или таблица не создана). Local dump всё равно ок."
+fi
+
 log "Backup complete"
