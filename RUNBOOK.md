@@ -105,35 +105,83 @@ sudo crontab -e
 Каждый день в 03:30 UTC создаётся `backups/khubiy-workshop-YYYYMMDD-HHMMSS.sql.gz`.
 Старше 14 дней — автоматически удаляются.
 
-### Offsite копия
+### Offsite копия (опц.)
 
-Раскомментировать секцию RCLONE в `scripts/backup-postgres.sh` после настройки:
+Скрипт `backup-postgres.sh` подхватывает env vars из `/opt/khubiy-workshop/.env_backup`:
 
 ```bash
-rclone config  # interactive, добавить remote `khubiy-backup`
+# /opt/khubiy-workshop/.env_backup
+KW_BACKUP_RCLONE_REMOTE=selectel-s3
+KW_BACKUP_RCLONE_PATH=khubiy-prod-backups
+```
+
+Настройка rclone (один раз):
+
+```bash
+apt install rclone
+rclone config  # interactive, добавить remote 'selectel-s3' (S3 API)
 # Тестируем:
-rclone copy backups/khubiy-workshop-XXXXXX.sql.gz khubiy-backup:khubiy-workshop-backups/
+rclone copy backups/khubiy-workshop-XXXXXX.sql.gz selectel-s3:khubiy-prod-backups/
 ```
 
 Рекомендуемые S3-провайдеры (RU-юрисдикция): Selectel Cloud Storage, Yandex
-Cloud Object Storage, VK Cloud. Альтернатива (если санкции не страшны):
-Backblaze B2 — самый дешёвый.
+Cloud Object Storage, VK Cloud. Альтернатива: Backblaze B2 — самый дешёвый.
 
-### Восстановление из дампа
+Если offsite upload падает — скрипт **не падает**, просто пишет WARN в лог.
+Локальная копия в `/opt/khubiy-workshop/backups/` всегда создаётся первой.
+
+### Проверка восстановимости
+
+`scripts/verify-backup.sh` берёт последний дамп, восстанавливает в throwaway-БД
+`khubiy_verify_<ts>`, проверяет counts, удаляет. Рекомендуется в cron раз в неделю:
+
+```bash
+# crontab -e (root)
+0 4 * * 0 /opt/khubiy-workshop/scripts/verify-backup.sh >> /var/log/khubiy-backup-verify.log 2>&1
+```
+
+Ручной запуск:
+
+```bash
+ssh root@45.144.177.119 'cd /opt/khubiy-workshop && ./scripts/verify-backup.sh'
+```
+
+Exit code 0 — backup восстановим. Не-нулевой — что-то сломано, проверь логи.
+
+### Восстановление из дампа (полное)
 
 ```bash
 ssh root@45.144.177.119
 cd /opt/khubiy-workshop
 
-# Полное восстановление — DROP + CREATE DB заново
-docker compose -f docker-compose.prod.yml exec -T postgres dropdb -U postgres --if-exists khubiy_workshop
-docker compose -f docker-compose.prod.yml exec -T postgres createdb -U postgres -O khubiy_admin khubiy_workshop
-gunzip < backups/khubiy-workshop-YYYYMMDD-HHMMSS.sql.gz | \
-    docker compose -f docker-compose.prod.yml exec -T postgres \
-    psql -U khubiy_admin -d khubiy_workshop
+# 1. Остановить api чтобы не было активных запросов в БД
+docker compose -f docker-compose.prod.yml stop api
 
-# Перезапустить api чтобы пересоздать пул коннекшенов
-docker compose -f docker-compose.prod.yml up -d --force-recreate --no-deps api
+# 2. Сначала восстанавливаем в новую БД (отдельная — чтобы можно было
+#    откатиться если что-то пойдёт не так).
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "CREATE DATABASE khubiy_workshop_new;"
+zcat backups/khubiy-workshop-YYYYMMDD-HHMMSS.sql.gz | \
+    docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -d khubiy_workshop_new --quiet
+
+# 3. Sanity check
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -d khubiy_workshop_new \
+    -c "SELECT COUNT(*) FROM platform.tenants;"
+
+# 4. Переименовываем: старая БД → backup, новая → prod
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "ALTER DATABASE khubiy_workshop RENAME TO khubiy_workshop_pre_restore;"
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "ALTER DATABASE khubiy_workshop_new RENAME TO khubiy_workshop;"
+
+# 5. Поднимаем api
+docker compose -f docker-compose.prod.yml up -d --no-deps api
+
+# 6. Через несколько дней (если всё ок) — дропаем pre_restore
+docker compose -f docker-compose.prod.yml exec -T postgres \
+    psql -U postgres -c "DROP DATABASE khubiy_workshop_pre_restore;"
 ```
 
 ---
