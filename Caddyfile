@@ -59,11 +59,26 @@ workshop.khubiyinc.ru {
 }
 
 # ============================================================================
-# Legacy-редирект: старый домен app.* → workshop.* (сохраняем старые ссылки/закладки)
+# Legacy-домен app.* → workshop.*
+#   /api/*  — проксируем НАПРЯМУЮ в backend (без редиректа): установленные
+#             мобильные сборки бьют в app.khubiyinc.ru/api, а 301 ломает POST
+#             (метод/тело/Authorization теряются). Так старые приложения
+#             работают до обновления на workshop.
+#   остальное — 301 на workshop (браузер, старые ссылки/закладки).
 # ============================================================================
 
 app.khubiyinc.ru {
-    redir https://workshop.khubiyinc.ru{uri} permanent
+    handle_path /api* {
+        rewrite * /api{path}
+        reverse_proxy api:8000 {
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+        }
+    }
+    handle {
+        redir https://workshop.khubiyinc.ru{uri} permanent
+    }
 }
 
 # ============================================================================
