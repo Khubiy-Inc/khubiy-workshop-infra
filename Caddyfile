@@ -5,9 +5,17 @@
 # - редиректит HTTP → HTTPS
 # - добавляет security headers
 #
-# Файл подключается через docker-compose volume. Изменения требуют
-# `docker compose restart caddy` (не reload — на горячую файл не
-# перечитывается без admin API).
+# Файл подключается через docker-compose volume.
+#
+# ВАЖНО: этот Caddy — ЕДИНСТВЕННЫЙ ingress (:80/:443) на общем VPS и
+# обслуживает НЕСКОЛЬКО проектов (khubiy + co-located сайты ниже). Все
+# обслуживаемые домены ОБЯЗАНЫ быть в этом файле. Применять изменения
+# ТОЛЬКО graceful-перечиткой (атомарно, zero-downtime):
+#   docker exec khubiy-workshop-prod-caddy-1 \
+#     caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+# НЕ делать `docker compose restart/up -d caddy` и не стартовать caddy без
+# всех блоков ниже — иначе co-located сайты (apteka/quests) исчезнут из
+# конфига (они подцеплены только через этот файл).
 
 {
     # Email для Let's Encrypt — подставляется через ENV ACME_EMAIL
@@ -69,6 +77,37 @@ minio.{$PRIMARY_DOMAIN} {
         -Server
     }
     reverse_proxy minio:9001
+}
+
+# ============================================================================
+# Co-located сайты на этом же общем VPS-ingress (не khubiy-проекты, но один
+# Caddy/один VPS — все владельца). Обязаны быть здесь, иначе reload/restart
+# их потеряет. Воспроизведены 1-в-1 из рантайм-конфига Caddy.
+# ============================================================================
+
+apteka.uiyy.ru {
+    handle_path /api* {
+        rewrite * /api{path}
+        reverse_proxy apteka-backend:8000 {
+            health_uri /health
+            health_interval 30s
+        }
+    }
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+    reverse_proxy apteka-frontend:3000
+}
+
+questss.ncsa.uiyy.ru {
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+    reverse_proxy abi-quests-frontend-1:80
 }
 
 # ============================================================================
