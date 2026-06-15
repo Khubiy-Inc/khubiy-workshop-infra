@@ -19,7 +19,7 @@
 
 {
     # Email для Let's Encrypt — подставляется через ENV ACME_EMAIL
-    email {$ACME_EMAIL}
+    email admin@khubiyinc.ru
     # Метрики Prometheus (опц.)
     servers {
         metrics
@@ -30,7 +30,7 @@
 # Главный домен — Web SPA (frontend) + reverse-proxy /api/* в backend
 # ============================================================================
 
-workshop.{$PRIMARY_DOMAIN} {
+workshop.khubiyinc.ru {
     # /api/* идёт в FastAPI; всё остальное — в nginx с SPA-бандлом
     handle_path /api* {
         # rewrite добавляет /api обратно (мы только path stripped через handle_path).
@@ -62,15 +62,15 @@ workshop.{$PRIMARY_DOMAIN} {
 # Legacy-редирект: старый домен app.* → workshop.* (сохраняем старые ссылки/закладки)
 # ============================================================================
 
-app.{$PRIMARY_DOMAIN} {
-    redir https://workshop.{$PRIMARY_DOMAIN}{uri} permanent
+app.khubiyinc.ru {
+    redir https://workshop.khubiyinc.ru{uri} permanent
 }
 
 # ============================================================================
 # MinIO console (опц., только для админа)
 # ============================================================================
 
-minio.{$PRIMARY_DOMAIN} {
+minio.khubiyinc.ru {
     header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
@@ -114,6 +114,6 @@ questss.ncsa.uiyy.ru {
 # Apex redirect (khubiyinc.ru → workshop.khubiyinc.ru)
 # ============================================================================
 
-{$PRIMARY_DOMAIN}, www.{$PRIMARY_DOMAIN} {
-    redir https://workshop.{$PRIMARY_DOMAIN}{uri} permanent
+khubiyinc.ru, www.khubiyinc.ru {
+    redir https://workshop.khubiyinc.ru{uri} permanent
 }
