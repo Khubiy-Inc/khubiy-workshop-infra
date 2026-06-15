@@ -46,6 +46,13 @@ x-api-env: &api-env
   KW_SMTP_USER: ${KW_SMTP_USER:-}
   KW_SMTP_PASSWORD: ${KW_SMTP_PASSWORD:-}
   KW_SMTP_FROM: ${KW_SMTP_FROM:-noreply@${KW_PRIMARY_DOMAIN}}
+  # Email через Resend (HTTP API). Если KW_RESEND_API_KEY задан в .env —
+  # backend шлёт через Resend, иначе через SMTP выше. From-домен обязан быть
+  # верифицирован в Resend (SPF/DKIM). KW_WEB_BASE_URL — ссылка «Войти» в письмах.
+  KW_RESEND_API_KEY: ${KW_RESEND_API_KEY:-}
+  KW_EMAIL_FROM: ${KW_EMAIL_FROM:-no-reply@${KW_PRIMARY_DOMAIN}}
+  KW_EMAIL_FROM_NAME: ${KW_EMAIL_FROM_NAME:-Khubiy Workshop}
+  KW_WEB_BASE_URL: https://app.${KW_PRIMARY_DOMAIN}
 
 services:
   # --------------------------------------------------------------------------
