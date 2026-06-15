@@ -28,13 +28,13 @@ x-api-env: &api-env
   KW_JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
   KW_SENTRY_DSN: ${KW_SENTRY_DSN:-}
   KW_SENTRY_TRACES_SAMPLE_RATE: ${KW_SENTRY_TRACES_SAMPLE_RATE:-0.05}
-  KW_CORS_ORIGINS: '["https://app.${KW_PRIMARY_DOMAIN}"]'
+  KW_CORS_ORIGINS: '["https://workshop.${KW_PRIMARY_DOMAIN}"]'
   KW_WEBPUSH_VAPID_PUBLIC_KEY: ${KW_WEBPUSH_VAPID_PUBLIC_KEY}
   KW_WEBPUSH_VAPID_PRIVATE_KEY: ${KW_WEBPUSH_VAPID_PRIVATE_KEY}
   KW_WEBPUSH_VAPID_EMAIL: mailto:${KW_WEBPUSH_VAPID_EMAIL}
-  KW_WEBAUTHN_RP_ID: app.${KW_PRIMARY_DOMAIN}
+  KW_WEBAUTHN_RP_ID: workshop.${KW_PRIMARY_DOMAIN}
   KW_WEBAUTHN_RP_NAME: KhubiyInc Workshop
-  KW_WEBAUTHN_RP_ORIGIN: https://app.${KW_PRIMARY_DOMAIN}
+  KW_WEBAUTHN_RP_ORIGIN: https://workshop.${KW_PRIMARY_DOMAIN}
   KW_S3_ENDPOINT_URL: http://minio:9000
   KW_S3_REGION: ${KW_S3_REGION:-ru-1}
   KW_S3_BUCKET: ${KW_S3_BUCKET:-khubiy-workshop}
@@ -52,7 +52,7 @@ x-api-env: &api-env
   KW_RESEND_API_KEY: ${KW_RESEND_API_KEY:-}
   KW_EMAIL_FROM: ${KW_EMAIL_FROM:-no-reply@${KW_PRIMARY_DOMAIN}}
   KW_EMAIL_FROM_NAME: ${KW_EMAIL_FROM_NAME:-Khubiy Workshop}
-  KW_WEB_BASE_URL: https://app.${KW_PRIMARY_DOMAIN}
+  KW_WEB_BASE_URL: https://workshop.${KW_PRIMARY_DOMAIN}
 
 services:
   # --------------------------------------------------------------------------
