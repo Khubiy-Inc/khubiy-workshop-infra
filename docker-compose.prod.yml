@@ -107,12 +107,19 @@ services:
       - internal
 
   # --------------------------------------------------------------------------
-  # Cache / lockouts / outbox JTI store
+  # Cache / lockouts / outbox JTI store / whitelist refresh-токенов
+  #
+  # ВАЖНО: policy = noeviction. Redis хранит whitelist рефреш-токенов
+  # (auth:refresh:<jti>, TTL 7д) — на нём держится длительность сессии.
+  # При allkeys-lru Redis под нагрузкой вытеснял эти ключи ДО истечения TTL,
+  # рефреш падал с refresh_revoked → пользователя выкидывало из аккаунта
+  # «спустя время». noeviction + запас памяти: auth-ключи переживают TTL,
+  # кэш-ключи всё равно с собственным TTL и истекают сами.
   # --------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis-data:/data
     healthcheck:
