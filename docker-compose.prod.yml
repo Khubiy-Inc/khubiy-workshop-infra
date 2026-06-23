@@ -176,6 +176,12 @@ services:
   api:
     image: ghcr.io/khubiy-inc/khubiy-workshop-api:${API_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Host-публикация для общего host-nginx (ingress на VPS проксирует
+    # workshop.khubiyinc.ru/api -> 127.0.0.1:8010). Без этого пересоздание
+    # api на деплое теряет порт -> host-nginx 502. Раньше держалось ручной
+    # правкой compose на VPS, но git reset --hard в деплое её затирал.
+    ports:
+      - "127.0.0.1:8010:8000"
     environment: *api-env
     secrets:
       - jwt_private.pem
@@ -219,6 +225,11 @@ services:
   web:
     image: ghcr.io/khubiy-inc/khubiy-workshop-web:${WEB_IMAGE_TAG:-latest}
     restart: unless-stopped
+    # Host-публикация для общего host-nginx (ingress проксирует
+    # workshop.khubiyinc.ru/ -> 127.0.0.1:8011). Без этого пересоздание web
+    # на деплое теряет порт -> host-nginx 502 (инцидент 2026-06-23).
+    ports:
+      - "127.0.0.1:8011:80"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
       interval: 30s
